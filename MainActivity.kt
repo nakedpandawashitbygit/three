@@ -7,6 +7,7 @@ import android.app.TimePickerDialog
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
+import java.lang.Runnable
 import android.os.Handler
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -17,6 +18,11 @@ import android.widget.EditText
 import android.widget.TextView
 import java.text.SimpleDateFormat
 import java.util.*
+import android.content.Intent
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
+import com.example.three.TimerService.TimerServiceBinder
 
 class MainActivity : Activity() {
 
@@ -32,13 +38,15 @@ class MainActivity : Activity() {
     private var activeTimerIndex = -1
 
     private lateinit var sharedPreferences: SharedPreferences
+    private var timerService: TimerService? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         sharedPreferences = getSharedPreferences("app_data", Context.MODE_PRIVATE)
         loadData()
+
+        startTimerService()
 
         deadlineButtons = listOf(
             findViewById(R.id.deadlineButton1),
@@ -111,10 +119,43 @@ class MainActivity : Activity() {
         saveData()
     }
 
+    override fun onResume() {
+        super.onResume()
+        loadData()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        saveData()
+    }
+
+    private fun startTimerService() {
+        val intent = Intent(this, TimerService::class.java)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun stopTimerService() {
+        unbindService(serviceConnection)
+    }
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, service: IBinder) {
+            val binder = service as TimerService.TimerServiceBinder
+            timerService = binder.getService()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName) {
+            timerService = null
+        }
+    }
+
     private fun loadData() {
         for (i in 0 until 8) {
             deadlines[i] = sharedPreferences.getString("deadline_$i", "")!!
             projectNames[i] = sharedPreferences.getString("project_name_$i", "")!!
+            startTimes[i] = sharedPreferences.getLong("timer_start_time_$i", 0L)
+            elapsedTimes[i] = sharedPreferences.getLong("timer_elapsed_time_$i", 0L)
+            isRunning[i] = sharedPreferences.getBoolean("timer_state_$i", false)
         }
     }
 
@@ -123,6 +164,9 @@ class MainActivity : Activity() {
         for (i in 0 until 8) {
             editor.putString("deadline_$i", deadlines[i])
             editor.putString("project_name_$i", projectNames[i])
+            editor.putLong("timer_start_time_$i", startTimes[i])
+            editor.putLong("timer_elapsed_time_$i", elapsedTimes[i])
+            editor.putBoolean("timer_state_$i", isRunning[i])
         }
         editor.apply()
     }
@@ -144,7 +188,6 @@ class MainActivity : Activity() {
         if (activeTimerIndex != -1 && activeTimerIndex != index) {
             pauseTimer(activeTimerIndex)
         }
-
         startTimes[index] = SystemClock.elapsedRealtime() - elapsedTimes[index]
         handler.post(updateTimerTask(index))
         isRunning[index] = true
@@ -165,7 +208,7 @@ class MainActivity : Activity() {
             elapsedTimes[index] = SystemClock.elapsedRealtime() - startTimes[index]
             updateTimerText(index)
             if (isRunning[index]) {
-                handler.postDelayed(this, 1000)
+                handler.postDelayed(this, 10) // Обновляем каждые 10 миллисекунд
             }
         }
     }
@@ -177,7 +220,6 @@ class MainActivity : Activity() {
         val day = calendar.get(Calendar.DAY_OF_MONTH)
         val hour = calendar.get(Calendar.HOUR_OF_DAY)
         val minute = calendar.get(Calendar.MINUTE)
-
         val dateTimePickerDialog = DatePickerDialog(
             this,
             { _, selectedYear, selectedMonth, selectedDay ->
@@ -192,7 +234,6 @@ class MainActivity : Activity() {
             },
             year, month, day
         )
-
         dateTimePickerDialog.show()
     }
 
@@ -217,6 +258,17 @@ class MainActivity : Activity() {
     private fun updateDeadline(index: Int, deadline: String) {
         deadlines[index] = deadline
         deadlineButtons[index].text = deadline
+
+        // Проверяем, сколько времени осталось до дедлайна
+        val deadlineDate = SimpleDateFormat("yyyy-MM-dd HH:mm").parse(deadline)
+        val timeRemaining = deadlineDate.time - System.currentTimeMillis()
+
+        // Если до дедлайна осталось менее часа, окрашиваем кнопку в светло-красный цвет
+        if (timeRemaining < 3600000) { // Менее часа
+            deadlineButtons[index].setBackgroundColor(resources.getColor(R.color.light_red))
+        } else {
+            deadlineButtons[index].setBackgroundColor(resources.getColor(R.color.default_background))
+        }
     }
 
     private fun updateTimerTexts() {
@@ -234,7 +286,8 @@ class MainActivity : Activity() {
         val hours = (elapsedTime / 3600000).toInt()
         val minutes = ((elapsedTime - hours * 3600000) / 60000).toInt()
         val seconds = ((elapsedTime - hours * 3600000 - minutes * 60000) / 1000).toInt()
-        return String.format("%02d:%02d:%02d", hours, minutes, seconds)
+        val milliseconds = (elapsedTime - hours * 3600000 - minutes * 60000 - seconds * 1000).toInt()
+        return String.format("%02d:%02d:%02d.%03d", hours, minutes, seconds, milliseconds)
     }
 
     private fun getTimerText(index: Int): String {
